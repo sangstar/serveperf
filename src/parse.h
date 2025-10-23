@@ -92,5 +92,6 @@ void oaiResponse_set_from_jsonKeyValue(struct oaiResponse *resp, struct jsonKeyV
 void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
                                            struct curlResponse *curlResp);
 
+double oaiResponsePerf_score(struct oaiResponsePerf *perf);
 
 #endif //SERVEPERF_PARSE_H

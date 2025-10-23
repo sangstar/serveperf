@@ -5,15 +5,19 @@
 #include "threads.h"
 
 #include <stdlib.h>
+#include <string.h>
+
 #include "rb.h"
 #include "http_tools.h"
 #include "debug.h"
 
 // TODO: Eventually let this change so can get different perfs for different req rates
 //       to get the ideal req rate?
-const double REQUEST_RATE = 5.0;
+int REQUEST_RATE = 10;
 
 pthread_t curl_thread_pool[MAX_THREADS];
+pthread_t parse_thread;
+
 
 struct RequestMetrics {
     uint32_t elapsed_time;
@@ -69,15 +73,15 @@ void *read_text_and_send_req_worker_fn(void *arg) {
                                   "gpt-3.5-turbo-instruct");
             oaiResponsePerf_set_from_curlResponse(perf, &resp);
             clock_gettime(CLOCK_MONOTONIC, &end);
-            PRINT_OAI_RESPONSE_PERF(perf);
 
-            rb_put((void *) buf_b, perf);
+            if (perf->tokens_count > 0) rb_put((void *) buf_b, perf);
             elapsed = elapsed_sec(start, end);
             logDebug("Worker served 1 request in %f seconds", elapsed);
             __atomic_fetch_add(&global_metrics.num_requests, 1, __ATOMIC_RELAXED);
 
+            int request_rate = __atomic_load_n(&REQUEST_RATE, __ATOMIC_ACQUIRE);
             double rate = 1 / elapsed;
-            double goal_elapsed = 1 / REQUEST_RATE * MAX_THREADS;
+            double goal_elapsed = 1.0 / (double) request_rate * MAX_THREADS;
             if (elapsed < goal_elapsed) {
                 double difference = goal_elapsed - elapsed;
                 if (difference >= 1) {
@@ -92,17 +96,59 @@ void *read_text_and_send_req_worker_fn(void *arg) {
                     ts.tv_nsec = difference * 1e9;
                 }
 
-                logDebug("Worker's latency was %f, %f less than %f. Sleeping for %f s to maintain request rate of %f",
+                logDebug("Worker's latency was %f, %f less than %f. Sleeping for %f s to maintain request rate of %i",
                          elapsed, difference,
-                         goal_elapsed, ts.tv_nsec / 1e9, REQUEST_RATE);
+                         goal_elapsed, difference, request_rate);
                 nanosleep(&ts, NULL);
             }
-        } else if (__atomic_load_n(&pipe->finished, __ATOMIC_ACQUIRE) == 1) {
+        } else if (__atomic_load_n(&pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
             break;
         } else {
             sched_yield();
         };
     }
-    logDebug("Worker finished with pipe %i", __atomic_load_n(&pipe->finished, __ATOMIC_ACQUIRE));
+    return NULL;
+}
+
+void *get_and_rank_responses_worker_fn(void *arg) {
+    logDebug("Worker started: arg=%p", arg);
+    struct rbPipe *pipe = (struct rbPipe *) arg;
+    struct oaiResponsePerf *best = malloc(sizeof(struct oaiResponsePerf));
+
+    double reqs = 0;
+    double total_throughput = 0;
+    double total_ttft = 0;
+
+    double best_score = 0;
+    while (1) {
+        struct oaiResponsePerf *perf = (struct oaiResponsePerf *) rb_get(pipe->buf_a);
+        if (!perf) {
+            if (__atomic_load_n(&pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
+                break;
+            }
+            sched_yield();
+            continue;
+        }
+        if (perf->tokens_count == 0) {
+            fprintf(stderr, "got perf with 0 tokens\n");
+            exit(1);
+        }
+        reqs++;
+        total_throughput += perf->throughput;
+        total_ttft += perf->ttft;
+        double perf_score = oaiResponsePerf_score(perf);
+        if (perf_score > best_score) {
+            best_score = perf_score;
+            memcpy(best, perf, sizeof(struct oaiResponsePerf));
+        }
+        free(perf);
+    }
+    if (best_score > 0.0)
+        PRINT_OAI_RESPONSE_PERF(best);
+    fprintf(stderr, "req rate: %i, average throughput: %f, average TTFT: %f\n",
+            __atomic_load_n(&REQUEST_RATE, __ATOMIC_RELAXED),
+            total_throughput / reqs,
+            total_ttft / reqs);
+    free(best);
     return NULL;
 }

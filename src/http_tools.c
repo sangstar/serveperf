@@ -47,7 +47,8 @@ size_t curl_callback_default(void *contents, size_t size, size_t nmemb, void *us
     size_t realsize = size * nmemb;
     struct curlResponse *resp = (struct curlResponse *) userp;
     if (resp->responseSize + realsize >= MAX_RESPONSE_LEN) {
-        fprintf(stderr, "Response exceeds max response length of %i bytes\n", MAX_RESPONSE_LEN);
+        fprintf(stderr, "Response would exceed max response length of %i bytes: %s\n", MAX_RESPONSE_LEN,
+                (char *) contents);
         exit(1);
     }
     if (resp->responseSize == 0) {
@@ -120,9 +121,9 @@ void query_openai_endpoint(struct curlResponse *resp, char *url, const char *pro
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(req.data));
     curl_easy_setopt(curl, CURLOPT_VERBOSE, 0L);
     curl_easy_setopt(curl, CURLOPT_POST, 1);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L); // seconds to wait for a connection
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L); // total time for entire transfer
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // <-- critical for threads
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
 
     struct timespec ts;
