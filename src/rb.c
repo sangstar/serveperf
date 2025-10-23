@@ -2,7 +2,7 @@
 // Created by Sanger Steel on 10/22/25.
 //
 
-#include "../rb.h"
+#include "rb.h"
 #include "debug.h"
 #include <stdio.h>
 

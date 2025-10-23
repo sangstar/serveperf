@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "http_tools.h"
-#include "../debug.h"
+#include "debug.h"
 
 void curlRequest_addheader(struct curlRequest *req, char *data) {
     req->headers[req->num_headers].size = strlen(data);

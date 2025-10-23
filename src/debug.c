@@ -2,9 +2,9 @@
 // Created by Sanger Steel on 10/22/25.
 //
 
-#include "../debug.h"
+#include "debug.h"
 #include <stdio.h>
-#include "../parse.h"
+#include "parse.h"
 
 void print_oai_response(struct oaiResponse *resp) {
     logDebug(

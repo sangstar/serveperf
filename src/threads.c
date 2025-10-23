@@ -2,7 +2,7 @@
 // Created by Sanger Steel on 10/22/25.
 //
 
-#include "../threads.h"
+#include "threads.h"
 
 #include <stdlib.h>
 #include "rb.h"

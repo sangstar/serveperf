@@ -4,10 +4,10 @@
 #include <curl/curl.h>
 #include <string.h>
 #include "http_tools.h"
-#include "../parse.h"
-#include "../rb.h"
+#include "parse.h"
+#include "rb.h"
 #include <pthread.h>
-#include "../threads.h"
+#include "threads.h"
 
 #include "debug.h"
 

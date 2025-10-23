@@ -2,7 +2,7 @@
 // Created by Sanger Steel on 10/22/25.
 //
 
-#include "../parse.h"
+#include "parse.h"
 
 #include <ctype.h>
 #include <stdlib.h>
