@@ -43,8 +43,16 @@ void oaiResponse_set_from_jsonKeyValue(struct oaiResponse *resp, struct jsonKeyV
 void oaiResponsePerf_add_response(struct oaiResponsePerf *perf, struct oaiResponse *resp) {
     size_t len = strlen(resp->resp_metrics.text);
     if (perf->response_len + len >= MAX_RESPONSE_LEN) {
-        fprintf(stderr, "Response would max response length of %i bytes: %s\n", MAX_RESPONSE_LEN,
-                resp->resp_metrics.text);
+        fprintf(
+            stderr,
+            "response would max response length, strlen(%s)=%lu + perf->response_len=%lu = %lu > %i bytes: %s\n",
+            resp->resp_metrics.text,
+            len,
+            perf->response_len,
+            perf->response_len + len,
+            MAX_RESPONSE_LEN,
+            resp->resp_metrics.text);
+        PRINT_OAI_RESPONSE_PERF(perf);
         exit(1);
     }
     memcpy(perf->response + perf->response_len, resp->resp_metrics.text, len);

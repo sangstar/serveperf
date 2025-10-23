@@ -65,6 +65,12 @@ void *read_text_and_send_req_worker_fn(void *arg) {
         struct mpmcRingBuffer *buf_b = pipe->buf_b;
 
         struct oaiResponsePerf *perf = malloc(sizeof(struct oaiResponsePerf));
+        perf->tokens_count = 0;
+        perf->latency = 0;
+        perf->throughput = 0;
+        perf->ttft = 0;
+        perf->response_len = 0;
+        perf->response[0] = '\0';
 
         line = (char *) rb_get(buf_a);
         if (line) {

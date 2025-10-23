@@ -98,8 +98,9 @@ int main(void) {
     curl_global_init(CURL_GLOBAL_ALL);
 
     score_perf_by_request_rate(5);
-    score_perf_by_request_rate(10);
     score_perf_by_request_rate(25);
+    score_perf_by_request_rate(50);
+    score_perf_by_request_rate(150);
     logDebug("Finished.");
     return 0;
 }
