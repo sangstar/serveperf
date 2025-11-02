@@ -18,5 +18,5 @@ reqs: 186.000000, req rate: 300, average throughput: 43.809200, average TTFT: 0.
 req rate: 300, request throughput: 25.471062
 ```
 
-A weekend project and not intended for production use. `--text-url` assumes a
+An unpolished weekend project and not intended for production use. `--text-url` assumes a
 raw .txt file over HTTP like the one given in the example.
