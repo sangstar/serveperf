@@ -54,7 +54,7 @@ void *read_text_and_send_req_worker_fn(void *arg) {
     logDebug("Worker started: arg=%p", arg);
     SharedPtr_factoryExecutionContext *sp = arg;
     factoryExecutionContext *ctx = SharedPtr_factoryExecutionContext_get(sp);
-    char *line = NULL;
+    struct buffer_char *line;
     double elapsed = 0;
     struct timespec ts;
     struct timespec start, end;
@@ -64,20 +64,22 @@ void *read_text_and_send_req_worker_fn(void *arg) {
     while (1) {
         struct curlHandler resp = {0};
 
-        resp.curlResponse.data = buffer_char_new(MAX_RESPONSE_BODY);
+        resp.curlResponse.data = buffer_char_new(1024);
 
 
         struct mpmcRingBuffer *buf_a = ctx->pipe->buf_a;
         struct mpmcRingBuffer *buf_b = ctx->pipe->buf_b;
 
 
-        line = (char *) rb_get(buf_a);
+        line = (struct buffer_char *) rb_get(buf_a);
         if (line) {
             struct oaiResponsePerf *perf = calloc(1, sizeof(struct oaiResponsePerf));
             clock_gettime(CLOCK_MONOTONIC, &start);
             query_openai_endpoint(&resp, ctx->request_metadata.endpoint, line,
                                   ctx->request_metadata.model_id, ctx->request_metadata.max_tokens);
             oaiResponsePerf_set_from_curlResponse(perf, &resp);
+            free(line->data);
+            free(line);
             clock_gettime(CLOCK_MONOTONIC, &end);
 
             if (perf->tokens_count > 0) rb_put((void *) buf_b, perf);
@@ -108,8 +110,12 @@ void *read_text_and_send_req_worker_fn(void *arg) {
                 nanosleep(&ts, NULL);
             }
         } else if (__atomic_load_n(&ctx->pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
+            if (resp.curlResponse.data->len > 0) free(resp.curlResponse.data->data);
+            free(resp.curlResponse.data);
             break;
         } else {
+            free(resp.curlResponse.data->data);
+            free(resp.curlResponse.data);
             sched_yield();
         };
     }

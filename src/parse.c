@@ -128,7 +128,7 @@ void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
         }
     }
     if (perf->response_len == 0) {
-        fprintf(stderr, "response invalid for parsing: %s\n", curl_handler->data);
+        fprintf(stderr, "response invalid for parsing: %s", curl_handler->data);
         exit(1);
     }
     perf->throughput = perf->tokens_count / perf->latency;
@@ -138,7 +138,7 @@ double oaiResponsePerf_score(struct oaiResponsePerf *perf) {
     return perf->throughput / perf->ttft;
 }
 
-void query_openai_endpoint(curlHandler *resp, const char *endpoint, const char *prompt,
+void query_openai_endpoint(curlHandler *resp, const char *endpoint, const struct buffer_char *prompt,
                            const char *model,
                            int max_tokens) {
     CURL *curl;
@@ -173,20 +173,20 @@ void query_openai_endpoint(curlHandler *resp, const char *endpoint, const char *
 
 void curlHandler_openai_curl_opt_setter(curlHandler *req, void *data, CURL *curl) {
     struct oaiRequest *oaiReq = (struct oaiRequest *) data;
-    char payload[512];
+    char payload[2048];
     memset(payload, 0, sizeof(payload));
 
-    sprintf(payload,
-            "{"
-            "\"model\": \"%s\","
-            "\"prompt\": \"%s\","
-            "\"max_tokens\": %d,"
-            "\"stream\": true"
-            "}",
-            oaiReq->model_id,
-            oaiReq->prompt,
-            oaiReq->max_tokens);
-    logDebug("payload=%.*s", (int)strlen(payload), payload);
+    snprintf(payload,
+             sizeof(payload),
+             "{"
+             "\"model\": \"%s\","
+             "\"prompt\": \"%s\","
+             "\"max_tokens\": %d,"
+             "\"stream\": true"
+             "}",
+             oaiReq->model_id,
+             oaiReq->prompt->data,
+             oaiReq->max_tokens);
     req->url = oaiReq->endpoint;
     req->data = strdup(payload);
 

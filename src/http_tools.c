@@ -54,12 +54,7 @@ size_t curl_callback_dataset(void *contents, size_t size, size_t nmemb, void *us
         clock_gettime(CLOCK_REALTIME, &ts);
         curl_handler->curlResponse.first_ts = ts.tv_sec + ts.tv_nsec / 1e9;
     }
-    memcpy(curl_handler->curlResponse.data, contents, realsize);
-    if (curlHandler_check_for_done(curl_handler)) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        curl_handler->curlResponse.last_ts = ts.tv_sec + ts.tv_nsec / 1e9;
-    };
+    buffer_char_memcpy(curl_handler->curlResponse.data, contents, realsize);
     return realsize;
 }
 
@@ -97,11 +92,12 @@ CURLcode try_curl(CURL *curl, void *type, curlHandler *resp,
     return curl_easy_perform(curl);
 }
 
-void curlHandler_dataset_download_opt_setter(struct curlHandler *req, void *data, CURL *curl) {
+void curlHandler_dataset_download_opt_setter(curlHandler *req, void *data, CURL *curl) {
     if (curl) {
-        FILE *fp = fopen("output.txt", "wb");
-        curl_easy_setopt(curl, CURLOPT_URL, "https://norvig.com/big.txt");
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        logDebug("Getting text data from: %s", req->url);
+        curl_easy_setopt(curl, CURLOPT_URL, req->url);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)req);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_callback_dataset);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // follow redirects
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-test/1.0");
         curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 102400L); // large buffer
@@ -109,7 +105,6 @@ void curlHandler_dataset_download_opt_setter(struct curlHandler *req, void *data
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
         curl_easy_perform(curl);
         curl_easy_cleanup(curl);
-        fclose(fp);
     }
 }
 

@@ -14,15 +14,11 @@
 
 uint64_t SharedPtrRegistryIdx = 0;
 
-void score_perf_by_request_rate(int request_rate, int input_len, int max_tokens, int num_requests, const char *endpoint,
+void score_perf_by_request_rate(struct buffer_char *src, int request_rate, int input_len, int max_tokens,
+                                int num_requests, const char *endpoint,
                                 const char *model_id) {
     __atomic_store_n(&REQUEST_RATE, (int) request_rate, __ATOMIC_RELEASE);
     logDebug("Request rate set to %d", __atomic_load_n(&REQUEST_RATE, __ATOMIC_ACQUIRE));
-    FILE *fp = fopen("../alice29.txt", "r");
-    if (!fp) {
-        fprintf(stderr, "error: failed to open alice29.txt\n");
-        exit(1);
-    }
     logDebug("Performing a test with request_rate=%i, input_len=%i, max_tokens=%i, num_requests=%i, endpoint=%s",
              request_rate, input_len, max_tokens, num_requests, endpoint);
 
@@ -69,32 +65,41 @@ void score_perf_by_request_rate(int request_rate, int input_len, int max_tokens,
         pthread_create(&curl_thread_pool[i], NULL, read_text_and_send_req_worker_fn, text_sp);
     }
 
+
+    // Deploy worker fn for resp_pipe
+    pthread_create(&parse_thread, NULL, get_and_rank_responses_worker_fn, resp_sp);
+
     // Producer logic for text_rb
-    char line[input_len];
 
     int writes = 0;
-    while (fgets(line, input_len, fp)) {
+    while (1) {
+        struct buffer_char *line = buffer_char_new(input_len + 100);
         if (writes >= num_requests) {
             logDebug("Leaving early.");
             break;
         }
-        line[strcspn(line, "\r\n")] = '\0'; // trim newline
-        line[strcspn(line, "\"")] = '\0'; // trim newline
-        if (strlen(line) == 0) {
+        buffer_char_memcpy(line, src->data + input_len * writes, sizeof(char) * input_len);
+        if (strstr(line->data, "\r\n") != NULL) {
+            line->data[strcspn(line->data, "\r\n")] = '\0'; // trim newline
+            line->len = strlen(line->data);
+        }
+        if (strstr(line->data, "\n\n") != NULL) {
+            line->data[strcspn(line->data, "\n\n")] = '\0'; // trim newline
+            line->len = strlen(line->data);
+        }
+        if (strstr(line->data, "\"") != NULL) {
+            line->data[strcspn(line->data, "\"")] = '\0'; // trim newline
+            line->len = strlen(line->data);
+        }
+        if (strlen(line->data) == 0) {
+            writes++;
             continue;
         }
-        char *copy = strdup(line);
-        if (!copy) {
-            perror("strdup");
-            exit(1);
-        }
-        rb_put(text_rb, copy);
+        rb_put(text_rb, line);
         writes++;
     }
     __atomic_store_n(&text_pipe->producer_finished, 1, __ATOMIC_RELEASE);
 
-    // Deploy worker fn for resp_pipe
-    pthread_create(&parse_thread, NULL, get_and_rank_responses_worker_fn, resp_sp);
 
     for (int i = 0; i < MAX_THREADS; i++) {
         pthread_join(curl_thread_pool[i], NULL);
@@ -147,11 +152,18 @@ int main(int argc, char **argv) {
     char req_rates[buf_size];
     memset(req_rates, 0, sizeof(req_rates));
 
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "error: failed to initialize curl\n");
+        exit(1);
+    }
+
     int input_len = 100;
     int max_tokens = 50;
     int num_requests = 100;
     char endpoint[buf_size];
     char model[buf_size];
+    char text_url[buf_size];
 
     for (int i = 0; i < argc; i++) {
         char *arg = argv[i];
@@ -173,7 +185,17 @@ int main(int argc, char **argv) {
         if (strcmp(arg, "--model") == 0) {
             sprintf(model, "%s", argv[i + 1]);
         }
+        if (strcmp(arg, "--text-url") == 0) {
+            sprintf(text_url, "%s", argv[i + 1]);
+        }
     }
+
+
+    curlHandler *curl_handler = calloc(1, sizeof(curlHandler));
+    curl_handler->curlResponse.data = buffer_char_new(buf_size);
+    curl_handler->url = text_url;
+    try_curl(curl, NULL, curl_handler, curlHandler_dataset_download_opt_setter);
+
 
     struct buffer_int *int_buf = buffer_int_new(buf_size);
     struct buffer_char *char_buf = buffer_char_new(buf_size);
@@ -204,7 +226,8 @@ int main(int argc, char **argv) {
 
     int *int_values = (int *) int_buf->data;
     for (int i = 0; i < int_buf->len; i++) {
-        score_perf_by_request_rate(int_values[i], input_len, max_tokens, num_requests, endpoint, model);
+        score_perf_by_request_rate(curl_handler->curlResponse.data, int_values[i], input_len, max_tokens, num_requests,
+                                   endpoint, model);
     }
     logDebug("Finished.");
     __atomic_store_n(&kill_thread, 1, __ATOMIC_RELEASE);

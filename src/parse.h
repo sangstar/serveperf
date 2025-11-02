@@ -18,7 +18,7 @@ enum FinishReason {
 
 struct oaiRequest {
     int max_tokens;
-    const char *prompt;
+    const struct buffer_char *prompt;
     const char *endpoint;
     const char *model_id;
 };
@@ -96,7 +96,7 @@ void jsonBuf_refresh(struct jsonBuf *buf);
 void query_openai_endpoint(
     curlHandler *resp,
     const char *endpoint,
-    const char *prompt,
+    const struct buffer_char *prompt,
     const char *model,
     int max_tokens
 );

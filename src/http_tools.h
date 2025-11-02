@@ -47,5 +47,6 @@ void curl_setopt_from_curlHandler(CURL *curl, struct curl_slist *headers, const 
 CURLcode try_curl(CURL *curl, void *type, curlHandler *resp,
                   void (*curl_opt_setter)(curlHandler *, void *, CURL *));
 
+void curlHandler_dataset_download_opt_setter(curlHandler *req, void *data, CURL *curl);
 
 #endif //SERVEPERF_CURL_TYPES_H

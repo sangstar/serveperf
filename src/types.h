@@ -62,16 +62,17 @@
         buf->len++; \
     } \
     static inline void buffer_##name##_memcpy(struct buffer_##name *dest, void *src, size_t n) { \
-        if (dest->len + sizeof(*src) * n >= dest->capacity) { \
-            dest->data = realloc(dest->data, dest->capacity + sizeof(*src) * n * 2); \
+        if (dest->len + sizeof(datatype) * n >= dest->capacity) { \
+            dest->data = realloc(dest->data, dest->capacity * 2 + sizeof(datatype) * n + 1); \
             if (!dest->data) { \
                 perror("realloc"); \
                 exit(1); \
             } \
-            dest->capacity *= sizeof(*src) * n * 2; \
+            dest->capacity = dest->capacity * 2 + sizeof(datatype) * n + 1; \
         }; \
-        memcpy(dest->data + dest->len, src, sizeof(*src) * n); \
-        dest->len += sizeof(*src) * n; \
+        memcpy(dest->data + dest->len, src, sizeof(datatype) * n); \
+        dest->len += sizeof(datatype) * n; \
+        dest->data[dest->len++] = '\0'; \
     } \
     static inline void buffer_##name##_refresh(struct buffer_##name *buf) { \
         char *buf_data = (char *) buf->data; \
