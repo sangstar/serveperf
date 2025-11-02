@@ -117,7 +117,7 @@ void score_perf_by_request_rate(struct buffer_char *src, int request_rate, int i
 
 volatile int kill_thread = 0;
 
-void *gc_collector() {
+void *gc_worker_fn() {
     while (__atomic_load_n(&kill_thread, __ATOMIC_ACQUIRE) == 0) {
         for (uint64_t i = 1; i <= SharedPtrRegistryIdx; i++) {
             if (!SharedPtrRegistry[i].sp || SharedPtrRegistry[i].magic != 0xDEADBEEF) {
@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
     curl_global_init(CURL_GLOBAL_ALL);
 
     pthread_t gc_thread;
-    pthread_create(&gc_thread, NULL, gc_collector, NULL);
+    pthread_create(&gc_thread, NULL, gc_worker_fn, NULL);
 
 
     size_t buf_size = 64;
