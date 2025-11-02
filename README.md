@@ -1,4 +1,4 @@
-# `serverperf`
+# `serveperf`
 
 Inference service profiler for OAI API servers in pure C. Automatically adjusts the request rate
 to meet the desired amount by enforcing wait times on worker threads.
