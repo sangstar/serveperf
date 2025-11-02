@@ -23,11 +23,11 @@ static void open_logfile() {
 #define logDebug(fmt, ...) \
 do { \
     pthread_mutex_lock(&log_mutex); \
-    char buf[1024]; \
-    int len = snprintf(buf, sizeof(buf), \
+    char _debug_log_buffer[1024]; \
+    int len = snprintf(_debug_log_buffer, sizeof(_debug_log_buffer), \
     "[ serveperf %s tid%-15" PRIuMAX " | %-15s | %-35s:%-3i ] DEBUG: " fmt "\n", \
     __TIME__, (uintmax_t)pthread_self(), __FILE_NAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
-    fwrite(buf, 1, len, stdout); \
+    fwrite(_debug_log_buffer, 1, len, stdout); \
     fflush(stdout); \
     pthread_mutex_unlock(&log_mutex); \
 } while(0)

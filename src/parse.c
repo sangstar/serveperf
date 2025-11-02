@@ -10,6 +10,7 @@
 
 #include "debug.h"
 #include "http_tools.h"
+#include "types.h"
 
 
 void jsonBuf_append(struct jsonBuf *buf, char c) {
@@ -62,7 +63,7 @@ void oaiResponsePerf_add_response(struct oaiResponsePerf *perf, struct oaiRespon
 }
 
 void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
-                                           struct curlResponse *curlResp) {
+                                           curlHandler *curl_handler) {
     enum oaiResponse_ParseState state = UNKNOWN;
     struct jsonBuf buf = {0};
 
@@ -70,13 +71,13 @@ void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
 
     struct jsonKeyValue kv = {0};
 
-    double ttft = curlResp->first_ts - curlResp->send_ts;
+    double ttft = curl_handler->curlResponse.first_ts - curl_handler->curlResponse.send_ts;
     perf->ttft = ttft;
-    perf->latency = curlResp->last_ts - curlResp->send_ts;
+    perf->latency = curl_handler->curlResponse.last_ts - curl_handler->curlResponse.send_ts;
 
-    for (int i = 0; i < curlResp->responseSize; i++) {
-        char c = curlResp->data[i];
-        char next = curlResp->data[i + 1];
+    for (int i = 0; i < curl_handler->curlResponse.data->len; i++) {
+        char c = curl_handler->curlResponse.data->data[i];
+        char next = curl_handler->curlResponse.data->data[i + 1];
         switch (state) {
             case UNKNOWN:
                 if (c == 'd') jsonBuf_refresh(&buf);
@@ -126,9 +127,95 @@ void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
             default: ;
         }
     }
+    if (perf->response_len == 0) {
+        fprintf(stderr, "response invalid for parsing: %s\n", curl_handler->data);
+        exit(1);
+    }
     perf->throughput = perf->tokens_count / perf->latency;
 }
 
 double oaiResponsePerf_score(struct oaiResponsePerf *perf) {
     return perf->throughput / perf->ttft;
 }
+
+void query_openai_endpoint(curlHandler *resp, const char *endpoint, const char *prompt,
+                           const char *model,
+                           int max_tokens) {
+    CURL *curl;
+    curl = curl_easy_init();
+
+    struct oaiRequest req = {0};
+    req.endpoint = endpoint;
+    req.model_id = model;
+    req.prompt = prompt;
+    req.max_tokens = max_tokens;
+
+    try_curl(curl, &req, resp, curlHandler_openai_curl_opt_setter);
+
+
+    if (!curl) {
+        fprintf(stderr, "Curl initialization failed\n");
+        return;
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OPERATION_TIMEDOUT) {
+        logDebug("curl timed out, retrying..");
+    } else if (res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n",
+                curl_easy_strerror(res));
+        exit(1);
+    }
+    curl_easy_cleanup(curl);
+};
+
+
+void curlHandler_openai_curl_opt_setter(curlHandler *req, void *data, CURL *curl) {
+    struct oaiRequest *oaiReq = (struct oaiRequest *) data;
+    char payload[512];
+    memset(payload, 0, sizeof(payload));
+
+    sprintf(payload,
+            "{"
+            "\"model\": \"%s\","
+            "\"prompt\": \"%s\","
+            "\"max_tokens\": %d,"
+            "\"stream\": true"
+            "}",
+            oaiReq->model_id,
+            oaiReq->prompt,
+            oaiReq->max_tokens);
+    logDebug("payload=%.*s", (int)strlen(payload), payload);
+    req->url = oaiReq->endpoint;
+    req->data = strdup(payload);
+
+    char *api_key = getenv("OPENAI_API_KEY");
+    if (!api_key) {
+        fprintf(stderr, "OPENAI_API_KEY not set\n");
+        exit(1);
+    }
+    char auth_text[256];
+    sprintf(auth_text, "Authorization: Bearer %s", api_key);
+
+    curlHandler_addheader(req, strdup(auth_text));
+    curlHandler_addheader(req, strdup("Content-Type: application/json"));
+
+    curl_setopt_from_curlHandler(curl, NULL, req);
+
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)req);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_callback_oai);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req->data);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(req->data));
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, 0L);
+    curl_easy_setopt(curl, CURLOPT_POST, 1);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    req->curlResponse.send_ts = ts.tv_sec + ts.tv_nsec / 1e9;
+}
+

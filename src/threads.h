@@ -8,6 +8,9 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#include "http_tools.h"
+#include "shared_ptr.h"
+
 #define MAX_THREADS 64
 
 extern int REQUEST_RATE;
@@ -23,11 +26,30 @@ struct rbPipe {
     int producer_finished;
 };
 
+
+enum factoryExecutionContextTypes {
+    TYPE_REQUEST,
+    TYPE_PARSE_RANK,
+};
+
+typedef struct {
+    struct rbPipe *pipe;
+    enum factoryExecutionContextTypes type;
+
+    struct {
+        const char *endpoint;
+        const char *model_id;
+        int max_tokens;
+    } request_metadata;
+} factoryExecutionContext;
+
 double elapsed_sec(struct timespec start, struct timespec end);
 
 void *read_text_and_send_req_worker_fn(void *arg);
 
 
 void *get_and_rank_responses_worker_fn(void *arg);
+
+DECLARE_SHARED_PTR(factoryExecutionContext);
 
 #endif //SERVEPERF_THREADS_H

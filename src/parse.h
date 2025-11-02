@@ -16,6 +16,12 @@ enum FinishReason {
     UNK,
 };
 
+struct oaiRequest {
+    int max_tokens;
+    const char *prompt;
+    const char *endpoint;
+    const char *model_id;
+};
 
 struct oaiResponsePerf {
     double latency;
@@ -87,11 +93,23 @@ void jsonBuf_append(struct jsonBuf *buf, char c);
 void jsonBuf_refresh(struct jsonBuf *buf);
 
 
+void query_openai_endpoint(
+    curlHandler *resp,
+    const char *endpoint,
+    const char *prompt,
+    const char *model,
+    int max_tokens
+);
+
+
 void oaiResponse_set_from_jsonKeyValue(struct oaiResponse *resp, struct jsonKeyValue *kv);
 
 void oaiResponsePerf_set_from_curlResponse(struct oaiResponsePerf *perf,
-                                           struct curlResponse *curlResp);
+                                           curlHandler *resp);
 
 double oaiResponsePerf_score(struct oaiResponsePerf *perf);
+
+void curlHandler_openai_curl_opt_setter(curlHandler *req, void *data, CURL *curl);
+
 
 #endif //SERVEPERF_PARSE_H

@@ -6,23 +6,15 @@
 #define SERVEPERF_CURL_TYPES_H
 #include <stddef.h>
 #include <curl/curl.h>
-#include "parse.h"
+#include "shared_ptr.h"
 
 
 #define MAX_HEADERS 8
 #define MAX_HEADER_SIZE 256
-#define MAX_RESPONSE_BODY (1024 * 10)
-
-struct curlResponse {
-    char data[MAX_RESPONSE_BODY];
-    size_t responseSize;
-    double send_ts;
-    double first_ts;
-    double last_ts;
-};
+#define MAX_RESPONSE_BODY (1024 * 100)
 
 
-struct curlRequest {
+typedef struct curlHandler {
     char *url;
     char *data;
 
@@ -32,21 +24,28 @@ struct curlRequest {
     } headers[MAX_HEADERS];
 
     size_t num_headers;
-};
 
-void curlRequest_addheader(struct curlRequest *req, char *data);
+    void (*curl_opt_setter)(CURL *);
+
+    struct {
+        struct buffer_char *data;
+        double send_ts;
+        double first_ts;
+        double last_ts;
+    } curlResponse;
+} curlHandler;
+
+DECLARE_SHARED_PTR(curlHandler);
+
+void curlHandler_addheader(struct curlHandler *req, char *data);
 
 
-size_t curl_callback_default(void *contents, size_t size, size_t nmemb, void *userp);
+size_t curl_callback_oai(void *contents, size_t size, size_t nmemb, void *userp);
 
-void curl_setopt_from_curlRequest(CURL *curl, struct curl_slist *headers, const struct curlRequest *req);
+void curl_setopt_from_curlHandler(CURL *curl, struct curl_slist *headers, const struct curlHandler *req);
 
+CURLcode try_curl(CURL *curl, void *type, curlHandler *resp,
+                  void (*curl_opt_setter)(curlHandler *, void *, CURL *));
 
-void query_openai_endpoint(
-    struct curlResponse *resp,
-    char *url,
-    const char *prompt,
-    const char *model
-);
 
 #endif //SERVEPERF_CURL_TYPES_H

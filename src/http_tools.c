@@ -6,8 +6,10 @@
 #include <string.h>
 #include "http_tools.h"
 #include "debug.h"
+#include "types.h"
 
-void curlRequest_addheader(struct curlRequest *req, char *data) {
+
+void curlHandler_addheader(struct curlHandler *req, char *data) {
     req->headers[req->num_headers].size = strlen(data);
     if (req->headers[req->num_headers].size > MAX_HEADER_SIZE) {
         fprintf(stderr, "header too long: %s\n", data);
@@ -17,21 +19,22 @@ void curlRequest_addheader(struct curlRequest *req, char *data) {
     req->num_headers++;
 }
 
-int curlResponse_check_for_done(struct curlResponse *resp) {
+int curlHandler_check_for_done(curlHandler *curl_handler) {
     size_t max_window = sizeof("[DONE]") - 1;
 
     char buf[32];
     memset(buf, 0, sizeof(buf));
     size_t buf_idx = 0;
 
-    for (int i = resp->responseSize - (resp->responseSize / 4); i < resp->responseSize; i++) {
-        char c = resp->data[i];
+    for (int i = curl_handler->curlResponse.data->len - (curl_handler->curlResponse.data->len / 4);
+         i < curl_handler->curlResponse.data->len; i++) {
+        char c = curl_handler->curlResponse.data->data[i];
         if (c == '[') {
             // Possibly [DONE]. Refresh buf so it'll fit
             buf_idx = 0;
             memset(buf, 0, sizeof(buf));
         }
-        buf[buf_idx++] = resp->data[i];
+        buf[buf_idx++] = curl_handler->curlResponse.data->data[i];
         if (buf_idx > max_window) {
             buf_idx = 0;
             memset(buf, 0, sizeof(buf));
@@ -43,31 +46,42 @@ int curlResponse_check_for_done(struct curlResponse *resp) {
     return 0;
 }
 
-size_t curl_callback_default(void *contents, size_t size, size_t nmemb, void *userp) {
+size_t curl_callback_dataset(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
-    struct curlResponse *resp = (struct curlResponse *) userp;
-    if (resp->responseSize + realsize >= MAX_RESPONSE_LEN) {
-        fprintf(stderr, "Response would exceed max response length of %i bytes: %s\n", MAX_RESPONSE_LEN,
-                (char *) contents);
-        exit(1);
-    }
-    if (resp->responseSize == 0) {
+    struct curlHandler *curl_handler = (struct curlHandler *) userp;
+    if (curl_handler->curlResponse.data->len == 0) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        resp->first_ts = ts.tv_sec + ts.tv_nsec / 1e9;
+        curl_handler->curlResponse.first_ts = ts.tv_sec + ts.tv_nsec / 1e9;
     }
-    memcpy(resp->data + resp->responseSize, contents, realsize);
-    resp->responseSize += realsize;
-    resp->data[resp->responseSize + 1] = '\0';
-    if (curlResponse_check_for_done(resp)) {
+    memcpy(curl_handler->curlResponse.data, contents, realsize);
+    if (curlHandler_check_for_done(curl_handler)) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        resp->last_ts = ts.tv_sec + ts.tv_nsec / 1e9;
+        curl_handler->curlResponse.last_ts = ts.tv_sec + ts.tv_nsec / 1e9;
     };
     return realsize;
 }
 
-void curl_setopt_from_curlRequest(CURL *curl, struct curl_slist *headers, const struct curlRequest *req) {
+size_t curl_callback_oai(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct curlHandler *curl_handler = (struct curlHandler *) userp;
+
+    if (curl_handler->curlResponse.data->len == 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        curl_handler->curlResponse.first_ts = ts.tv_sec + ts.tv_nsec / 1e9;
+    }
+    buffer_char_memcpy(curl_handler->curlResponse.data, contents, realsize);
+    if (curlHandler_check_for_done(curl_handler)) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        curl_handler->curlResponse.last_ts = ts.tv_sec + ts.tv_nsec / 1e9;
+    };
+    return realsize;
+}
+
+void curl_setopt_from_curlHandler(CURL *curl, struct curl_slist *headers, const struct curlHandler *req) {
     curl_easy_setopt(curl, CURLOPT_URL, req->url);
     for (int i = 0; i < req->num_headers; i++) {
         if (req->headers[i].size > 0) {
@@ -77,65 +91,25 @@ void curl_setopt_from_curlRequest(CURL *curl, struct curl_slist *headers, const 
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 }
 
-void query_openai_endpoint(struct curlResponse *resp, char *url, const char *prompt, const char *model) {
-    CURL *curl;
-    struct curlRequest req = {0};
-
-    curl = curl_easy_init();
-    if (!curl) {
-        fprintf(stderr, "Curl initialization failed\n");
-        return;
-    }
-
-    char payload[512];
-    memset(payload, 0, sizeof(payload));
-
-    sprintf(payload,
-            "{"
-            "\"model\": \"%s\","
-            "\"prompt\": \"%s\","
-            "\"stream\": true"
-            "}",
-            model,
-            prompt);
-    logDebug("payload=%.*s", (int)strlen(payload), payload);
-    req.url = url;
-    req.data = payload;
-
-    char *api_key = getenv("OPENAI_API_KEY");
-    if (!api_key) {
-        fprintf(stderr, "OPENAI_API_KEY not set\n");
-        exit(1);
-    }
-    char auth_text[256];
-    sprintf(auth_text, "Authorization: Bearer %s", api_key);
-
-    curlRequest_addheader(&req, strdup(auth_text));
-    curlRequest_addheader(&req, strdup("Content-Type: application/json"));
-
-    curl_setopt_from_curlRequest(curl, NULL, &req);
-
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)resp);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_callback_default);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req.data);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(req.data));
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, 0L);
-    curl_easy_setopt(curl, CURLOPT_POST, 1);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-
-
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    resp->send_ts = ts.tv_sec + ts.tv_nsec / 1e9;
-    CURLcode res = curl_easy_perform(curl);
-
-    if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() failed: %s\n",
-                curl_easy_strerror(res));
-        exit(1);
-    }
-
-    curl_easy_cleanup(curl);
+CURLcode try_curl(CURL *curl, void *type, curlHandler *resp,
+                  void (*curl_opt_setter)(curlHandler *resp, void *, CURL *)) {
+    curl_opt_setter(resp, type, curl);
+    return curl_easy_perform(curl);
 }
+
+void curlHandler_dataset_download_opt_setter(struct curlHandler *req, void *data, CURL *curl) {
+    if (curl) {
+        FILE *fp = fopen("output.txt", "wb");
+        curl_easy_setopt(curl, CURLOPT_URL, "https://norvig.com/big.txt");
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // follow redirects
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-test/1.0");
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 102400L); // large buffer
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+        curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+        fclose(fp);
+    }
+}
+

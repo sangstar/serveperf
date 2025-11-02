@@ -8,13 +8,14 @@
 #include "rb.h"
 #include <pthread.h>
 #include "threads.h"
+#include "types.h"
 
 #include "debug.h"
 
+uint64_t SharedPtrRegistryIdx = 0;
 
-#define INPUT_LEN 1024
-
-void score_perf_by_request_rate(int request_rate) {
+void score_perf_by_request_rate(int request_rate, int input_len, int max_tokens, int num_requests, const char *endpoint,
+                                const char *model_id) {
     __atomic_store_n(&REQUEST_RATE, (int) request_rate, __ATOMIC_RELEASE);
     logDebug("Request rate set to %d", __atomic_load_n(&REQUEST_RATE, __ATOMIC_ACQUIRE));
     FILE *fp = fopen("../alice29.txt", "r");
@@ -22,6 +23,8 @@ void score_perf_by_request_rate(int request_rate) {
         fprintf(stderr, "error: failed to open alice29.txt\n");
         exit(1);
     }
+    logDebug("Performing a test with request_rate=%i, input_len=%i, max_tokens=%i, num_requests=%i, endpoint=%s",
+             request_rate, input_len, max_tokens, num_requests, endpoint);
 
     // Create pipe for text and query preparation rbs
     struct rbPipe *text_pipe = malloc(sizeof(struct rbPipe));
@@ -32,6 +35,13 @@ void score_perf_by_request_rate(int request_rate) {
     text_pipe->buf_b = curl_rb;
     text_pipe->producer_finished = 0;
 
+    factoryExecutionContext *text_ctx = malloc(sizeof(factoryExecutionContext));
+    text_ctx->pipe = text_pipe;
+    text_ctx->type = TYPE_REQUEST;
+    text_ctx->request_metadata.endpoint = endpoint;
+    text_ctx->request_metadata.model_id = model_id;
+    text_ctx->request_metadata.max_tokens = max_tokens;
+
     // Create pipe for previous query preparation rb and resp parsing rb
     struct rbPipe *resp_pipe = malloc(sizeof(struct rbPipe));
     resp_pipe->buf_a = curl_rb;
@@ -40,6 +50,12 @@ void score_perf_by_request_rate(int request_rate) {
     resp_pipe->buf_b = resp_rb;
     resp_pipe->producer_finished = 0;
 
+    factoryExecutionContext *resp_ctx = malloc(sizeof(factoryExecutionContext));
+    resp_ctx->pipe = resp_pipe;
+    resp_ctx->type = TYPE_PARSE_RANK;
+
+    SharedPtr_factoryExecutionContext *text_sp = SharedPtr_factoryExecutionContext_new(text_ctx);
+    SharedPtr_factoryExecutionContext *resp_sp = SharedPtr_factoryExecutionContext_new(resp_ctx);
 
     // Deploy monitor thread
     pthread_t monitor_thread;
@@ -50,20 +66,20 @@ void score_perf_by_request_rate(int request_rate) {
 
     // Deploy worker fn for text_pipe
     for (int i = 0; i < MAX_THREADS; i++) {
-        pthread_create(&curl_thread_pool[i], NULL, read_text_and_send_req_worker_fn, text_pipe);
+        pthread_create(&curl_thread_pool[i], NULL, read_text_and_send_req_worker_fn, text_sp);
     }
 
     // Producer logic for text_rb
-    char line[INPUT_LEN];
+    char line[input_len];
 
-    int n_requests = 300;
     int writes = 0;
-    while (fgets(line, INPUT_LEN, fp)) {
-        if (writes >= n_requests) {
+    while (fgets(line, input_len, fp)) {
+        if (writes >= num_requests) {
             logDebug("Leaving early.");
             break;
         }
         line[strcspn(line, "\r\n")] = '\0'; // trim newline
+        line[strcspn(line, "\"")] = '\0'; // trim newline
         if (strlen(line) == 0) {
             continue;
         }
@@ -78,30 +94,121 @@ void score_perf_by_request_rate(int request_rate) {
     __atomic_store_n(&text_pipe->producer_finished, 1, __ATOMIC_RELEASE);
 
     // Deploy worker fn for resp_pipe
-    pthread_create(&parse_thread, NULL, get_and_rank_responses_worker_fn, resp_pipe);
+    pthread_create(&parse_thread, NULL, get_and_rank_responses_worker_fn, resp_sp);
 
     for (int i = 0; i < MAX_THREADS; i++) {
         pthread_join(curl_thread_pool[i], NULL);
     }
     __atomic_store_n(&resp_pipe->producer_finished, 1, __ATOMIC_RELEASE);
     clock_gettime(CLOCK_MONOTONIC, &end);
+
+    // TODO: The end marker here includes processing time here which isn't ideal
     double elapsed = elapsed_sec(start, end);
     pthread_join(parse_thread, NULL);
     fprintf(stderr, "req rate: %i, request throughput: %f\n",
             __atomic_load_n(&REQUEST_RATE, __ATOMIC_ACQUIRE),
-            (double) n_requests / elapsed);
-    free(text_pipe);
-    free(resp_pipe);
+            (double) num_requests / elapsed);
 }
 
-int main(void) {
+volatile int kill_thread = 0;
+
+void *gc_collector() {
+    while (__atomic_load_n(&kill_thread, __ATOMIC_ACQUIRE) == 0) {
+        for (uint64_t i = 1; i <= SharedPtrRegistryIdx; i++) {
+            if (!SharedPtrRegistry[i].sp || SharedPtrRegistry[i].magic != 0xDEADBEEF) {
+                continue;
+            }
+            if (strcmp(SharedPtrRegistry[i].type, "factoryExecutionContext") == 0) {
+                SharedPtr_factoryExecutionContext *sp = SharedPtrRegistry[i].sp;
+                if (__atomic_load_n(&sp->ref_count, __ATOMIC_ACQUIRE) <= 0) {
+                    logDebug("Freeing factoryExecutionContext %p at idx %" PRIu64 "", sp, i);
+                    free(sp->ptr->pipe);
+                    free(sp->ptr);
+                    free(sp);
+                }
+                SharedPtrRegistry[i].sp = NULL;
+            }
+        }
+        nanosleep(&((struct timespec){5, 100000000}), NULL);
+    }
+    return NULL;
+}
+
+
+int main(int argc, char **argv) {
     curl_global_init(CURL_GLOBAL_ALL);
 
-    score_perf_by_request_rate(5);
-    score_perf_by_request_rate(25);
-    score_perf_by_request_rate(50);
-    score_perf_by_request_rate(150);
+    pthread_t gc_thread;
+    pthread_create(&gc_thread, NULL, gc_collector, NULL);
+
+
+    size_t buf_size = 64;
+
+    char req_rates[buf_size];
+    memset(req_rates, 0, sizeof(req_rates));
+
+    int input_len = 100;
+    int max_tokens = 50;
+    int num_requests = 100;
+    char endpoint[buf_size];
+    char model[buf_size];
+
+    for (int i = 0; i < argc; i++) {
+        char *arg = argv[i];
+        if (strcmp(arg, "--req-rate") == 0) {
+            sprintf(req_rates, "%s", argv[i + 1]);
+        }
+        if (strcmp(arg, "--input-len") == 0) {
+            input_len = strtol(argv[i + 1], NULL, 10);
+        }
+        if (strcmp(arg, "--max-tokens") == 0) {
+            max_tokens = strtol(argv[i + 1], NULL, 10);
+        }
+        if (strcmp(arg, "--num-requests") == 0) {
+            num_requests = strtol(argv[i + 1], NULL, 10);
+        }
+        if (strcmp(arg, "--endpoint") == 0) {
+            sprintf(endpoint, "%s", argv[i + 1]);
+        }
+        if (strcmp(arg, "--model") == 0) {
+            sprintf(model, "%s", argv[i + 1]);
+        }
+    }
+
+    struct buffer_int *int_buf = buffer_int_new(buf_size);
+    struct buffer_char *char_buf = buffer_char_new(buf_size);
+
+    if (req_rates[0] != '\0') {
+        for (int i = 0; i < buf_size; i++) {
+            char c = req_rates[i];
+            if (c == '\0') {
+                int num = strtol(char_buf->data, NULL, 10);
+                buffer_char_append(char_buf, c);
+                buffer_int_append(int_buf, num);
+                buffer_char_refresh(char_buf);
+                break;
+            }
+            if (isdigit(c)) {
+                buffer_char_append(char_buf, c);
+            }
+            if (c == ',') {
+                buffer_char_append(char_buf, c);
+                int num = strtol(char_buf->data, NULL, 10);
+                buffer_int_append(int_buf, num);
+                buffer_char_refresh(char_buf);
+            }
+        }
+    }
+
+    buffer_int_print(int_buf);
+
+    int *int_values = (int *) int_buf->data;
+    for (int i = 0; i < int_buf->len; i++) {
+        score_perf_by_request_rate(int_values[i], input_len, max_tokens, num_requests, endpoint, model);
+    }
     logDebug("Finished.");
+    __atomic_store_n(&kill_thread, 1, __ATOMIC_RELEASE);
+    pthread_join(gc_thread, NULL);
     return 0;
 }
 

@@ -8,8 +8,10 @@
 #include <string.h>
 
 #include "rb.h"
-#include "http_tools.h"
+#include "parse.h"
 #include "debug.h"
+#include "types.h"
+#include "shared_ptr.h"
 
 // TODO: Eventually let this change so can get different perfs for different req rates
 //       to get the ideal req rate?
@@ -50,7 +52,8 @@ void *monitor_request_metrics_fn(void *arg) {
 
 void *read_text_and_send_req_worker_fn(void *arg) {
     logDebug("Worker started: arg=%p", arg);
-    struct rbPipe *pipe = (struct rbPipe *) arg;
+    SharedPtr_factoryExecutionContext *sp = arg;
+    factoryExecutionContext *ctx = SharedPtr_factoryExecutionContext_get(sp);
     char *line = NULL;
     double elapsed = 0;
     struct timespec ts;
@@ -59,24 +62,21 @@ void *read_text_and_send_req_worker_fn(void *arg) {
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     while (1) {
-        struct curlResponse resp = {0};
+        struct curlHandler resp = {0};
 
-        struct mpmcRingBuffer *buf_a = pipe->buf_a;
-        struct mpmcRingBuffer *buf_b = pipe->buf_b;
+        resp.curlResponse.data = buffer_char_new(MAX_RESPONSE_BODY);
 
-        struct oaiResponsePerf *perf = malloc(sizeof(struct oaiResponsePerf));
-        perf->tokens_count = 0;
-        perf->latency = 0;
-        perf->throughput = 0;
-        perf->ttft = 0;
-        perf->response_len = 0;
-        perf->response[0] = '\0';
+
+        struct mpmcRingBuffer *buf_a = ctx->pipe->buf_a;
+        struct mpmcRingBuffer *buf_b = ctx->pipe->buf_b;
+
 
         line = (char *) rb_get(buf_a);
         if (line) {
+            struct oaiResponsePerf *perf = calloc(1, sizeof(struct oaiResponsePerf));
             clock_gettime(CLOCK_MONOTONIC, &start);
-            query_openai_endpoint(&resp, "https://api.openai.com/v1/completions", line,
-                                  "gpt-3.5-turbo-instruct");
+            query_openai_endpoint(&resp, ctx->request_metadata.endpoint, line,
+                                  ctx->request_metadata.model_id, ctx->request_metadata.max_tokens);
             oaiResponsePerf_set_from_curlResponse(perf, &resp);
             clock_gettime(CLOCK_MONOTONIC, &end);
 
@@ -107,18 +107,21 @@ void *read_text_and_send_req_worker_fn(void *arg) {
                          goal_elapsed, difference, request_rate);
                 nanosleep(&ts, NULL);
             }
-        } else if (__atomic_load_n(&pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
+        } else if (__atomic_load_n(&ctx->pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
             break;
         } else {
             sched_yield();
         };
     }
+    SharedPtr_factoryExecutionContext_free(sp);
     return NULL;
 }
 
 void *get_and_rank_responses_worker_fn(void *arg) {
     logDebug("Worker started: arg=%p", arg);
-    struct rbPipe *pipe = (struct rbPipe *) arg;
+    SharedPtr_factoryExecutionContext *sp = arg;
+    factoryExecutionContext *ctx = SharedPtr_factoryExecutionContext_get(sp);
+
     struct oaiResponsePerf *best = malloc(sizeof(struct oaiResponsePerf));
 
     double reqs = 0;
@@ -127,9 +130,9 @@ void *get_and_rank_responses_worker_fn(void *arg) {
 
     double best_score = 0;
     while (1) {
-        struct oaiResponsePerf *perf = (struct oaiResponsePerf *) rb_get(pipe->buf_a);
+        struct oaiResponsePerf *perf = (struct oaiResponsePerf *) rb_get(ctx->pipe->buf_a);
         if (!perf) {
-            if (__atomic_load_n(&pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
+            if (__atomic_load_n(&ctx->pipe->producer_finished, __ATOMIC_ACQUIRE) == 1) {
                 break;
             }
             sched_yield();
@@ -151,10 +154,11 @@ void *get_and_rank_responses_worker_fn(void *arg) {
     }
     if (best_score > 0.0)
         PRINT_OAI_RESPONSE_PERF(best);
-    fprintf(stderr, "req rate: %i, average throughput: %f, average TTFT: %f\n",
-            __atomic_load_n(&REQUEST_RATE, __ATOMIC_RELAXED),
+    fprintf(stderr, "reqs: %f, req rate: %i, average throughput: %f, average TTFT: %f\n",
+            reqs, __atomic_load_n(&REQUEST_RATE, __ATOMIC_RELAXED),
             total_throughput / reqs,
             total_ttft / reqs);
     free(best);
+    SharedPtr_factoryExecutionContext_free(sp);
     return NULL;
 }
