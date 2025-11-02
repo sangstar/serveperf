@@ -3,6 +3,10 @@
 Inference service profiler for OAI API servers in pure C. Automatically adjusts the request rate
 to meet the desired amount by enforcing wait times on worker threads.
 
+Uses custom-built shared pointers, atomics, ring buffers, and a simplistic garbage collector daemon to manage shared
+state
+across threads without compromising performance.
+
 # Example:
 
 ```bash
